@@ -21,6 +21,7 @@ SHUTDOWN_TIMEOUT = 30  # in seconds
 LEADING_ZEROS_COUNT = 5  # appended to task ID to facilitate lexicographical order
 TASK_ATTEMPTS = 5  # how many times a task is attempted
 
+# Fake queue for POC
 CHECK_QUEUE = [
     'check_http -H www.google.com',
     'check_http -H www.docker.com -S',
@@ -51,12 +52,23 @@ TASK_STATES = {
 
 
 class CheckSwarm(Scheduler):
-    def __init__(self):
+    def __init__(self, carbon_host, statsd_host, carbon_port=2003, statsd_port=8125):
         print 'checkswarm init'
         self.tasks_created = 0
         self.timers = {}
+        self.carbon_host = carbon_host
+        self.carbon_port = carbon_port
+        self.statsd_host = statsd_host
+        self.statsd_port = statsd_port
 
-        self.index = 0 # for testing only
+        self.queue_index = 0 # for fake queue
+
+    def _report_task_timing(self, time_in_ms):
+        udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp_sock.sendto(
+            ''.join(['checkswarm:', str(time_in_ms), '|ms']).encode('utf-8'),
+            (self.statsd_host, self.statsd_port)
+        )
 
     def _calc_max_tasks(self, offer):
         count = 0
@@ -105,7 +117,7 @@ class CheckSwarm(Scheduler):
         executor = mesos_pb2.ExecutorInfo()
         # executor.executor_id.value = '-'.join(['check_executor',task.task_id.value])
         executor.executor_id.value = 'check_executor'
-        executor.command.value = 'python /tmp/check_executor.py'
+        executor.command.value = 'python /tmp/check_executor.py %s' % self.carbon_host
         task.executor.MergeFrom(executor)
         return task
 
@@ -125,11 +137,12 @@ class CheckSwarm(Scheduler):
             tasks = []
             if CHECK_QUEUE:
                 for i in range(self._calc_max_tasks(offer)):
-                    tasks.append(self._build_task(offer, CHECK_QUEUE[self.index]))
+                    tasks.append(self._build_task(offer, CHECK_QUEUE[self.queue_index]))
 
-                    self.index += 1
-                    if self.index == len(CHECK_QUEUE): self.index = 0
-
+                    # loop over fake queue:
+                    self.queue_index += 1
+                    if self.queue_index == len(CHECK_QUEUE): self.queue_index = 0
+                    # alternatively, iterate just once:
                     # tasks.append(self._build_task(offer, CHECK_QUEUE.pop()))
 
             if tasks:
@@ -147,14 +160,7 @@ class CheckSwarm(Scheduler):
             end_time = time.time()
             start_time = self.timers.pop(update.task_id.value, end_time)
             print 'Task %s completed in %s seconds' % (update.task_id.value, end_time-start_time)
-
-            time_in_ms = int(1000*(end_time-start_time))
-            udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            udp_sock.sendto(
-                ''.join(['checkswarm:', str(time_in_ms), '|ms']).encode('utf-8'),
-                ('ec2-54-68-89-164.us-west-2.compute.amazonaws.com', 8125)
-            )
-
+            self._report_task_timing(int(1000*(end_time-start_time)))
 
     def frameworkMessage(self, driver, executorId, slaveId, message):
         o = json.loads(message)
@@ -171,7 +177,9 @@ if __name__ == '__main__':
     framework.name = 'checkswarm'
     framework.failover_timeout = 60
 
-    checkswarm = CheckSwarm()
+    statsd_host = sys.argv[2]
+    carbon_host = statsd_host
+    checkswarm = CheckSwarm(carbon_host, statsd_host)
 
     driver = MesosSchedulerDriver(checkswarm, framework, sys.argv[1])
 

@@ -19,7 +19,7 @@ class CheckExecutor(Executor):
     # Replaces invalid characters for use in Graphite
     CARBON_REPLACEMENT_CHARACTER = '_'
 
-    def __init__(self, carbon_host='internal-test3a-gr-PrivateE-12D2MV3JAIIB5-1753911466.us-west-2.elb.amazonaws.com', carbon_port=2003):
+    def __init__(self, carbon_host, carbon_port=2003):
         self.carbon_host = carbon_host
         self.carbon_port = carbon_port
         self.carbon_queue = []
@@ -121,6 +121,6 @@ class CheckExecutor(Executor):
 
 if __name__ == '__main__':
     print 'Starting CheckExecutor'
-
-    driver = MesosExecutorDriver(CheckExecutor())
+    carbon_host = sys.argv[1]
+    driver = MesosExecutorDriver(CheckExecutor(carbon_host))
     sys.exit(0 if driver.run() == mesos_pb2.DRIVER_STOPPED else 1)
